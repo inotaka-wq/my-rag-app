@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 # LangChainとFAISS関連のライブラリをインポート
 from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
+from langchain_community.document_loaders import DirectoryLoader, PyMuPDFLoader
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
@@ -44,20 +44,21 @@ def setup_rag():
 
     # 1. ドキュメントの読み込み
     # 'backend/docs' ディレクトリ内のPDFをすべて読み込む
+    # ローダーを PyMuPDFLoader に変更
     loader = DirectoryLoader(
-        './docs',                # ドキュメントがあるディレクトリ
-        glob="**/*.pdf",         # PDFファイルのみを対象
-        loader_cls=PyPDFLoader   # PDFを読み込むクラスを指定
+        './docs',
+        glob="**/*.pdf",
+        loader_cls=PyMuPDFLoader  # <-- ここを変更
     )
-    documents = loader.load()
 
+    documents = loader.load()
     if not documents:
         print("ドキュメントが見つかりませんでした。'backend/docs'にPDFファイルを置いてください。")
         return
 
     # 2. ドキュメントの分割
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000, chunk_overlap=100)
+        chunk_size=1000, chunk_overlap=200)
     texts = text_splitter.split_documents(documents)
 
     # 3. ベクトル化（Embedding）モデルの準備
@@ -86,7 +87,7 @@ async def ask(query: Query):
         return {"error": "ベクトルストアが準備できていません。ドキュメントがあるか確認してください。"}
 
     # 1. 質問に関連する文書をベクトルDBから検索
-    retriever = vector_store.as_retriever(search_kwargs={"k": 3})  # 上位3件を検索
+    retriever = vector_store.as_retriever(search_kwargs={"k": 5})  # 5件検索してみる
     retrieved_docs = retriever.invoke(query.question)
 
     # 検索結果を整形
@@ -94,8 +95,10 @@ async def ask(query: Query):
 
     # 2. プロンプトの準備
     prompt_template = """
-    以下の情報のみを参考にして、ユーザーの質問に日本語で回答してください。
-    情報に答えがない場合は、「その情報は見つかりませんでした」と回答してください。
+    あなたは人事労務の専門家です。提供された『参考情報』に書かれている内容だけを根拠として、ユーザーの質問に回答してください。
+    あなたの知識や推測で回答してはいけません。
+
+    『参考情報』に記載がない、または質問に回答するための情報が不足している場合は、必ず「就業規則には該当する記載がありませんでした」とだけ回答してください。
 
     --- 参考情報 ---
     {context}
@@ -104,6 +107,7 @@ async def ask(query: Query):
     ユーザーの質問: {question}
     回答:
     """
+
     prompt = PromptTemplate(
         template=prompt_template,
         input_variables=["context", "question"]
@@ -116,6 +120,12 @@ async def ask(query: Query):
     try:
         response = chain.invoke(
             {"context": context, "question": query.question})
-        return {"answer": response['text']}
+
+        # 回答だけでなく、参考にしたコンテキストも返す
+        return {
+            "answer": response['text'],
+            "context": context  # LLMに渡した参考情報をそのまま返す
+        }
+
     except Exception as e:
         return {"error": str(e)}
