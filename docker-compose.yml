@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend:/app # 開発中のホットリロード用
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    volumes:
+      - ./frontend/src:/app/src # 開発中のホットリロード用（注意：上記Dockerfileではビルドが必要）
+    depends_on:
+      - backend
