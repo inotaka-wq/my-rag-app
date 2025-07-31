@@ -1,6 +1,7 @@
 # backend/main.py
 
 import os
+import logging  # ★★★ loggingモジュールをインポート ★★★
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -13,6 +14,10 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGener
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
+
+# ★★★ ロガーの基本設定 ★★★
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 # 環境変数の読み込みとAPIキーの設定
 load_dotenv()
@@ -39,18 +44,17 @@ app.add_middleware(
 @app.on_event("startup")
 def setup_rag():
     global vector_store
-    print("サーバー起動時にRAGのセットアップを開始します...")
+    logging.info("サーバー起動時にRAGのセットアップを開始します...")
 
     # 1. ドキュメントの読み込み
-    # ★★★ PDFとExcelファイルをそれぞれ読み込むように変更 ★★★
-    print("PDFファイルを読み込んでいます...")
+    logging.info("PDFファイルを読み込んでいます...")
     pdf_loader = DirectoryLoader(
         './docs',
         glob="**/*.pdf",
         loader_cls=UnstructuredFileLoader,
         show_progress=True
     )
-    print("Excelファイルを読み込んでいます...")
+    logging.info("Excelファイルを読み込んでいます...")
     excel_loader = DirectoryLoader(
         './docs',
         glob="**/*.xlsx",
@@ -62,8 +66,18 @@ def setup_rag():
     documents.extend(excel_loader.load())  # 読み込んだリストを結合
 
     if not documents:
-        print("ドキュメントが見つかりませんでした。'backend/docs'にPDFまたはExcelファイルを置いてください。")
+        logging.warning(
+            "ドキュメントが見つかりませんでした。'backend/docs'にPDFまたはExcelファイルを置いてください。")
         return
+    else:
+        # 読み込んだファイル名の一覧を表示する処理
+        loaded_files = set(doc.metadata.get('source', '不明なファイル')
+                           for doc in documents)
+        logging.info(f"--- 読み込み完了したファイル ({len(loaded_files)}件) ---")
+        for file_path in loaded_files:
+            # os.path.basenameでファイル名だけを抽出して表示
+            logging.info(f"- {os.path.basename(file_path)}")
+        logging.info("------------------------------------")
 
     # 2. ドキュメントの分割
     text_splitter = RecursiveCharacterTextSplitter(
@@ -75,7 +89,7 @@ def setup_rag():
 
     # 4. FAISSによるベクトルDBの作成
     vector_store = FAISS.from_documents(texts, embeddings)
-    print("RAGのセットアップが完了しました。")
+    logging.info("RAGのセットアップが完了しました。")
 
 
 # --- APIエンドポイント ---
@@ -143,7 +157,6 @@ async def ask(query: Query):
     # 3. LLMに質問と参考情報を渡して回答を生成
     llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
     chain = LLMChain(llm=llm, prompt=prompt)
-    print("prompt", prompt)
 
     try:
         response = chain.invoke(
