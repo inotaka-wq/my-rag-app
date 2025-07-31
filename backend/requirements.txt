@@ -11,3 +11,4 @@ pymupdf
 # PDFとExcelの両方を扱えるように変更
 unstructured[pdf,xlsx]
 langchain-unstructured
+rank-bm25

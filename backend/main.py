@@ -1,7 +1,7 @@
 # backend/main.py
 
 import os
-import logging  # ★★★ loggingモジュールをインポート ★★★
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,8 +14,10 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGener
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
+# ★★★ ハイブリッド検索のためのライブラリをインポート ★★★
+from langchain.retrievers import BM25Retriever, EnsembleRetriever
 
-# ★★★ ロガーの基本設定 ★★★
+# ロガーの基本設定
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -24,7 +26,8 @@ load_dotenv()
 os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
 
 # --- グローバル変数 ---
-vector_store = None
+# ★★★ retrieverをグローバル変数として保持 ★★★
+retriever = None
 
 # --- FastAPIアプリの初期化 ---
 app = FastAPI()
@@ -43,39 +46,26 @@ app.add_middleware(
 
 @app.on_event("startup")
 def setup_rag():
-    global vector_store
+    global retriever  # グローバル変数を参照
     logging.info("サーバー起動時にRAGのセットアップを開始します...")
 
     # 1. ドキュメントの読み込み
-    logging.info("PDFファイルを読み込んでいます...")
+    # (省略...前回と同じ)
     pdf_loader = DirectoryLoader(
-        './docs',
-        glob="**/*.pdf",
-        loader_cls=UnstructuredFileLoader,
-        show_progress=True
-    )
-    logging.info("Excelファイルを読み込んでいます...")
+        './docs', glob="**/*.pdf", loader_cls=UnstructuredFileLoader, show_progress=True)
     excel_loader = DirectoryLoader(
-        './docs',
-        glob="**/*.xlsx",
-        loader_cls=UnstructuredFileLoader,
-        show_progress=True
-    )
-
+        './docs', glob="**/*.xlsx", loader_cls=UnstructuredFileLoader, show_progress=True)
     documents = pdf_loader.load()
-    documents.extend(excel_loader.load())  # 読み込んだリストを結合
+    documents.extend(excel_loader.load())
 
     if not documents:
-        logging.warning(
-            "ドキュメントが見つかりませんでした。'backend/docs'にPDFまたはExcelファイルを置いてください。")
+        logging.warning("ドキュメントが見つかりませんでした。")
         return
     else:
-        # 読み込んだファイル名の一覧を表示する処理
         loaded_files = set(doc.metadata.get('source', '不明なファイル')
                            for doc in documents)
         logging.info(f"--- 読み込み完了したファイル ({len(loaded_files)}件) ---")
         for file_path in loaded_files:
-            # os.path.basenameでファイル名だけを抽出して表示
             logging.info(f"- {os.path.basename(file_path)}")
         logging.info("------------------------------------")
 
@@ -83,13 +73,28 @@ def setup_rag():
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000, chunk_overlap=200)
     texts = text_splitter.split_documents(documents)
+    logging.info(f"ドキュメントを {len(texts)}個のチャンクに分割しました。")
 
     # 3. ベクトル化（Embedding）モデルの準備
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
-    # 4. FAISSによるベクトルDBの作成
+    # 4. ★★★ ハイブリッド検索リトリーバーの作成 ★★★
+    # 4-1. キーワード検索 (BM25) のリトリーバーを作成
+    bm25_retriever = BM25Retriever.from_documents(texts)
+    bm25_retriever.k = 5  # キーワード検索で上位5件を取得
+
+    # 4-2. ベクトル検索 (FAISS) のリトリーバーを作成
     vector_store = FAISS.from_documents(texts, embeddings)
-    logging.info("RAGのセットアップが完了しました。")
+    faiss_retriever = vector_store.as_retriever(
+        search_kwargs={"k": 5})  # ベクトル検索で上位5件を取得
+
+    # 4-3. 2つのリトリーバーを組み合わせる (EnsembleRetriever)
+    retriever = EnsembleRetriever(
+        retrievers=[bm25_retriever, faiss_retriever],
+        weights=[0.5, 0.5]  # キーワード検索とベクトル検索を50%:50%の重みで評価
+    )
+
+    logging.info("ハイブリッド検索リトリーバーのセットアップが完了しました。")
 
 
 # --- APIエンドポイント ---
@@ -104,14 +109,10 @@ def read_root():
 
 @app.post("/debug-retrieval")
 async def debug_retrieval(query: Query):
-    """
-    FAISSがどのようなドキュメントチャンクを検索してきているかを直接確認するためのAPI。
-    """
-    global vector_store
-    if vector_store is None:
-        return {"error": "ベクトルストアが準備できていません。"}
+    global retriever  # グローバル変数を参照
+    if retriever is None:
+        return {"error": "リトリーバーが準備できていません。"}
 
-    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
     retrieved_docs = retriever.invoke(query.question)
 
     results = []
@@ -126,16 +127,15 @@ async def debug_retrieval(query: Query):
 
 @app.post("/ask")
 async def ask(query: Query):
-    global vector_store
-    if vector_store is None:
-        return {"error": "ベクトルストアが準備できていません。ドキュメントがあるか確認してください。"}
+    global retriever  # グローバル変数を参照
+    if retriever is None:
+        return {"error": "リトリーバーが準備できていません。"}
 
-    # 1. 質問に関連する文書をベクトルDBから検索
-    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+    # 1. ハイブリッド検索を実行
     retrieved_docs = retriever.invoke(query.question)
     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
-    # 2. プロンプトの準備
+    # 2. プロンプトの準備 (変更なし)
     prompt_template = """
     あなたは人事労務の専門家です。提供された『参考情報』に書かれている内容だけを根拠として、ユーザーの質問に回答してください。
     あなたの知識や推測で回答してはいけません。
@@ -149,21 +149,16 @@ async def ask(query: Query):
     ユーザーの質問: {question}
     回答:
     """
-    prompt = PromptTemplate(
-        template=prompt_template,
-        input_variables=["context", "question"]
-    )
+    prompt = PromptTemplate(template=prompt_template,
+                            input_variables=["context", "question"])
 
-    # 3. LLMに質問と参考情報を渡して回答を生成
+    # 3. LLMに質問と参考情報を渡して回答を生成 (変更なし)
     llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
     chain = LLMChain(llm=llm, prompt=prompt)
 
     try:
         response = chain.invoke(
             {"context": context, "question": query.question})
-        return {
-            "answer": response['text'],
-            "context": context
-        }
+        return {"answer": response['text'], "context": context}
     except Exception as e:
         return {"error": str(e), "context": context}
