@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 
 # LangChainとFAISS関連のライブラリをインポート
 from langchain_community.vectorstores import FAISS
-# ★★★ UnstructuredFileLoader は langchain_community からインポートします ★★★
 from langchain_community.document_loaders import DirectoryLoader, UnstructuredFileLoader
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -43,16 +42,27 @@ def setup_rag():
     print("サーバー起動時にRAGのセットアップを開始します...")
 
     # 1. ドキュメントの読み込み
-    # DirectoryLoaderにUnstructuredFileLoaderを指定する方式
-    loader = DirectoryLoader(
+    # ★★★ PDFとExcelファイルをそれぞれ読み込むように変更 ★★★
+    print("PDFファイルを読み込んでいます...")
+    pdf_loader = DirectoryLoader(
         './docs',
         glob="**/*.pdf",
-        loader_cls=UnstructuredFileLoader,  # PDFファイルをUnstructuredで読み込むように指定
+        loader_cls=UnstructuredFileLoader,
         show_progress=True
     )
-    documents = loader.load()
+    print("Excelファイルを読み込んでいます...")
+    excel_loader = DirectoryLoader(
+        './docs',
+        glob="**/*.xlsx",
+        loader_cls=UnstructuredFileLoader,
+        show_progress=True
+    )
+
+    documents = pdf_loader.load()
+    documents.extend(excel_loader.load())  # 読み込んだリストを結合
+
     if not documents:
-        print("ドキュメントが見つかりませんでした。'backend/docs'にPDFファイルを置いてください。")
+        print("ドキュメントが見つかりませんでした。'backend/docs'にPDFまたはExcelファイルを置いてください。")
         return
 
     # 2. ドキュメントの分割
@@ -125,7 +135,6 @@ async def ask(query: Query):
     ユーザーの質問: {question}
     回答:
     """
-
     prompt = PromptTemplate(
         template=prompt_template,
         input_variables=["context", "question"]
@@ -134,6 +143,7 @@ async def ask(query: Query):
     # 3. LLMに質問と参考情報を渡して回答を生成
     llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
     chain = LLMChain(llm=llm, prompt=prompt)
+    print("prompt", prompt)
 
     try:
         response = chain.invoke(

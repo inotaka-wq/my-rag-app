@@ -8,5 +8,6 @@ langchain-google-genai
 faiss-cpu
 pypdf
 pymupdf
-unstructured[pdf]
+# PDFとExcelの両方を扱えるように変更
+unstructured[pdf,xlsx]
 langchain-unstructured
