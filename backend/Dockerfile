@@ -1,6 +1,14 @@
 # ベースイメージ
 FROM python:3.11-slim
 
+# ★★★ Unstructuredが必要とするOSライブラリをインストール ★★★
+# rootユーザーに切り替えて、システムパッケージをインストールします
+USER root
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 # 作業ディレクトリ
 WORKDIR /app
 

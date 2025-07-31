@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 
 # LangChainとFAISS関連のライブラリをインポート
 from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import DirectoryLoader, PyMuPDFLoader
+# ★★★ UnstructuredFileLoader は langchain_community からインポートします ★★★
+from langchain_community.document_loaders import DirectoryLoader, UnstructuredFileLoader
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
@@ -19,7 +20,6 @@ load_dotenv()
 os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
 
 # --- グローバル変数 ---
-# ベクトルDBをグローバル変数として保持
 vector_store = None
 
 # --- FastAPIアプリの初期化 ---
@@ -43,14 +43,13 @@ def setup_rag():
     print("サーバー起動時にRAGのセットアップを開始します...")
 
     # 1. ドキュメントの読み込み
-    # 'backend/docs' ディレクトリ内のPDFをすべて読み込む
-    # ローダーを PyMuPDFLoader に変更
+    # DirectoryLoaderにUnstructuredFileLoaderを指定する方式
     loader = DirectoryLoader(
         './docs',
         glob="**/*.pdf",
-        loader_cls=PyMuPDFLoader  # <-- ここを変更
+        loader_cls=UnstructuredFileLoader,  # PDFファイルをUnstructuredで読み込むように指定
+        show_progress=True
     )
-
     documents = loader.load()
     if not documents:
         print("ドキュメントが見つかりませんでした。'backend/docs'にPDFファイルを置いてください。")
@@ -65,7 +64,6 @@ def setup_rag():
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
     # 4. FAISSによるベクトルDBの作成
-    # 読み込んだドキュメントをベクトル化し、FAISSインデックスをメモリ上に作成
     vector_store = FAISS.from_documents(texts, embeddings)
     print("RAGのセットアップが完了しました。")
 
@@ -80,6 +78,28 @@ def read_root():
     return {"message": "RAG API is running."}
 
 
+@app.post("/debug-retrieval")
+async def debug_retrieval(query: Query):
+    """
+    FAISSがどのようなドキュメントチャンクを検索してきているかを直接確認するためのAPI。
+    """
+    global vector_store
+    if vector_store is None:
+        return {"error": "ベクトルストアが準備できていません。"}
+
+    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+    retrieved_docs = retriever.invoke(query.question)
+
+    results = []
+    for doc in retrieved_docs:
+        results.append({
+            "content": doc.page_content,
+            "metadata": doc.metadata,
+        })
+
+    return {"retrieved_chunks": results}
+
+
 @app.post("/ask")
 async def ask(query: Query):
     global vector_store
@@ -87,10 +107,8 @@ async def ask(query: Query):
         return {"error": "ベクトルストアが準備できていません。ドキュメントがあるか確認してください。"}
 
     # 1. 質問に関連する文書をベクトルDBから検索
-    retriever = vector_store.as_retriever(search_kwargs={"k": 5})  # 5件検索してみる
+    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
     retrieved_docs = retriever.invoke(query.question)
-
-    # 検索結果を整形
     context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
     # 2. プロンプトの準備
@@ -120,12 +138,9 @@ async def ask(query: Query):
     try:
         response = chain.invoke(
             {"context": context, "question": query.question})
-
-        # 回答だけでなく、参考にしたコンテキストも返す
         return {
             "answer": response['text'],
-            "context": context  # LLMに渡した参考情報をそのまま返す
+            "context": context
         }
-
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "context": context}
