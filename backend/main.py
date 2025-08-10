@@ -81,11 +81,12 @@ def load_knowledge_base():
 def initialize_empty_db(embeddings):
     """空のFAISSインデックスとドキュメントDBを作成"""
     global vector_store, documents_db
-    embedding_size = len(embeddings.embed_query("test"))
+    embedding_size = 768  # GoogleGenerativeAIEmbeddingsのデフォルト次元数
     index = faiss.IndexFlatL2(embedding_size)
     docstore = InMemoryDocstore({})
     index_to_docstore_id = {}
-    vector_store = FAISS(embeddings, index, docstore, index_to_docstore_id)
+    vector_store = FAISS(embeddings.embed_query, index,
+                         docstore, index_to_docstore_id)
     documents_db = {}
 
 
@@ -111,19 +112,21 @@ class AskQuery(BaseModel):
 @app.post("/summarize")
 async def summarize_file(file: UploadFile = File(...)):
     """アップロードされたファイルを読み込み、内容を要約する"""
+    temp_path = f"temp_{file.filename}"
     try:
-        temp_path = f"temp_{file.filename}"
         with open(temp_path, "wb") as buffer:
             buffer.write(await file.read())
 
-        if file.filename.endswith('.pdf'):
+        if file.filename.lower().endswith('.pdf'):
             loader = PyPDFLoader(temp_path)
-        else:  # Excel, Txtなど
+        elif file.filename.lower().endswith(('.xlsx', '.xls')):
+            # UnstructuredFileLoaderがExcelをうまく扱える
+            loader = UnstructuredFileLoader(temp_path)
+        else:
             loader = UnstructuredFileLoader(temp_path)
 
         docs = loader.load()
         full_text = " ".join([doc.page_content for doc in docs])
-        os.remove(temp_path)
 
         if not full_text.strip():
             raise HTTPException(
@@ -132,10 +135,10 @@ async def summarize_file(file: UploadFile = File(...)):
         # Geminiに要約を依頼
         llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
         prompt = PromptTemplate.from_template(
-            "以下の文章を、重要なポイントを箇条書きで分かりやすく要約してください。\n\n文章:\n{text}"
+            "以下の文章を、社内ナレッジとして利用しやすいように、重要なポイントを箇条書きで分かりやすく要約してください。\n\n文章:\n{text}"
         )
         chain = LLMChain(llm=llm, prompt=prompt)
-        response = await chain.ainvoke({"text": full_text[:10000]})  # 長文対策
+        response = await chain.ainvoke({"text": full_text[:20000]})  # 長文対策
 
         return {"summary": response['text']}
 
@@ -143,6 +146,9 @@ async def summarize_file(file: UploadFile = File(...)):
         logging.error(f"要約エラー: {e}")
         raise HTTPException(
             status_code=500, detail=f"ファイルの処理中にエラーが発生しました: {str(e)}")
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 @app.get("/knowledge")
