@@ -1,8 +1,7 @@
 # ベースイメージ
 FROM python:3.11-slim
 
-# Unstructuredが必要とするOSライブラリをインストール
-# Excel(.xlsx)の解析に必要なライブラリを追加
+# OSライブラリをインストール
 USER root
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
