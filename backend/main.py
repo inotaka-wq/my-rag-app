@@ -20,7 +20,7 @@ from langchain.chains import LLMChain
 from langchain_community.document_loaders import UnstructuredFileLoader, PyPDFLoader
 
 # --- 初期設定 ---
-logging.basicConfig(level=logging.INFO,
+logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 load_dotenv()
 os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
@@ -207,6 +207,7 @@ async def ask_question(query: AskQuery):
     retriever = vector_store.as_retriever(search_kwargs={"k": 3})
     retrieved_docs = retriever.invoke(query.question)
     context = "\n\n---\n\n".join([doc.page_content for doc in retrieved_docs])
+    logging.debug(f"Context for LLM: {context}")
 
     # 2. プロンプトを作成
     prompt_template = """
