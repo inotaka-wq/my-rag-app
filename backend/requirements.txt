@@ -13,3 +13,4 @@ langchain-unstructured
 rank-bm25
 pandas # <-- Excel操作のために追加
 openpyxl # <-- pandasがExcelを読むために必要
+numpy
